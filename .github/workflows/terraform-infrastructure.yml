@@ -25,6 +25,29 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+      - name: Verify checkout contents
+        run: |
+            echo "===== GITHUB WORKSPACE ====="
+            echo "$GITHUB_WORKSPACE"
+
+            echo "===== CURRENT DIRECTORY ====="
+            pwd
+
+            echo "===== CHECKED OUT COMMIT ====="
+            git rev-parse HEAD
+
+            echo "===== ROOT DIRECTORY CONTENTS ====="
+            ls -la
+
+            echo "===== TERRAFORM DIRECTORY ====="
+            if [ -d terraform ]; then
+              ls -la terraform
+            else
+              echo "ERROR: terraform directory is missing from checkout"
+            fi
+
+            echo "===== GIT TRACKED TERRAFORM FILES ====="
+            git ls-tree -r --name-only HEAD terraform/
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v6
