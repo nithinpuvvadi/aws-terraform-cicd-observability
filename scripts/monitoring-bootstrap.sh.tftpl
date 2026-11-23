@@ -1,0 +1,59 @@
+
+#!/bin/bash
+set -euxo pipefail
+
+exec > >(tee -a /var/log/monitoring-bootstrap.log) 2>&1
+
+echo "Starting monitoring bootstrap"
+
+# 1. Install Docker
+dnf update -y
+dnf install -y docker
+systemctl enable --now docker
+
+# 2. Create Docker network
+docker network inspect monitoring >/dev/null 2>&1 || \
+  docker network create monitoring
+
+# 3. Create configuration and persistent data directories
+mkdir -p /opt/monitoring/prometheus
+mkdir -p /opt/monitoring/prometheus-data
+mkdir -p /opt/monitoring/grafana-data
+mkdir -p /opt/monitoring/grafana-provisioning/datasources
+# Decode configuration files supplied by Terraform
+echo "${prometheus_config_b64}" | base64 -d \
+  > /opt/monitoring/prometheus/prometheus.yaml
+
+echo "${grafana_datasource_b64}" | base64 -d \
+  > /opt/monitoring/grafana-provisioning/datasources/prometheus.yaml
+# 4. Set directory permissions
+chmod 755 /opt/monitoring
+chmod 755 /opt/monitoring/prometheus
+chmod 755 /opt/monitoring/prometheus-data
+chmod 755 /opt/monitoring/grafana-provisioning
+chmod 755 /opt/monitoring/grafana-provisioning/datasources
+chmod 755 /opt/monitoring/grafana-data
+# Allow containers to write to their persistent data directories
+chown -R 65534:65534 /opt/monitoring/prometheus-data
+chown -R 472:472 /opt/monitoring/grafana-data
+# 5. Start Prometheus
+docker run -d \
+  --name prometheus \
+  --restart unless-stopped \
+  --network monitoring \
+  -v /opt/monitoring/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yml:ro \
+  -v /opt/monitoring/prometheus-data:/prometheus \
+  prom/prometheus:v3.8.0
+
+# 6. Start Grafana with automatic Prometheus datasource provisioning
+docker run -d \
+  --name grafana \
+  --restart unless-stopped \
+  --network monitoring \
+  -p 127.0.0.1:3000:3000 \
+  -v /opt/monitoring/grafana-data:/var/lib/grafana \
+  -v /opt/monitoring/grafana-provisioning/datasources:/etc/grafana/provisioning/datasources:ro \
+  grafana/grafana:12.2.0
+
+echo "Monitoring bootstrap completed"
+
