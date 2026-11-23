@@ -45,9 +45,13 @@ variable "instance_type" {
 }
 
 variable "image_tag" {
-  description = "Docker image tag to deploy"
+  description = "Immutable application image tag to deploy from ECR"
   type        = string
-  default     = "bootstrap-placeholder"
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{40}$", var.image_tag))
+    error_message = "image_tag must be a 40-character Git commit SHA."
+  }
 }
 #variable "image_tag" {
 # description = "Immutable application image tag to deploy from ECR"

@@ -7,3 +7,16 @@ __pycache__/
 *.tfstate.backup
 *.tfvars
 .env
+
+# Terraform
+tfplan
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
