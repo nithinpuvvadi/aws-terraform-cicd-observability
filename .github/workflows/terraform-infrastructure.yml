@@ -3,6 +3,11 @@ name: Terraform Infrastructure Pipeline
 
 on:
   workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "40-character Git commit SHA of the ECR image"
+        required: true
+        type: string
 
 permissions:
   id-token: write
@@ -31,22 +36,11 @@ jobs:
           echo "===== GITHUB WORKSPACE ====="
           echo "$GITHUB_WORKSPACE"
 
-          echo "===== CURRENT DIRECTORY ====="
-          pwd
-
           echo "===== CHECKED OUT COMMIT ====="
           git rev-parse HEAD
 
-          echo "===== ROOT DIRECTORY CONTENTS ====="
-          ls -la
-
           echo "===== TERRAFORM DIRECTORY ====="
-          if [ -d "$GITHUB_WORKSPACE/terraform" ]; then
-            ls -la "$GITHUB_WORKSPACE/terraform"
-          else
-            echo "ERROR: Terraform directory is missing"
-            exit 1
-          fi
+          ls -la "$GITHUB_WORKSPACE/terraform"
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v6
@@ -61,6 +55,26 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.16.5
+
+      - name: Validate image tag
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          if [[ ! "$IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: image_tag must be a 40-character Git SHA"
+            exit 1
+          fi
+
+          echo "Image tag format is valid: $IMAGE_TAG"
+
+      - name: Verify image exists in ECR
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          aws ecr describe-images \
+            --region "$AWS_REGION" \
+            --repository-name aws-terraform-cicd-observability \
+            --image-ids imageTag="$IMAGE_TAG"
 
       - name: Terraform format check
         run: |
@@ -78,11 +92,13 @@ jobs:
           terraform validate
 
       - name: Terraform plan
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           cd "$GITHUB_WORKSPACE/terraform"
           terraform plan \
             -input=false \
-            -var="image_tag=bootstrap-placeholder" \
+            -var="image_tag=$IMAGE_TAG" \
             -out=tfplan
 
       - name: Export readable plan
