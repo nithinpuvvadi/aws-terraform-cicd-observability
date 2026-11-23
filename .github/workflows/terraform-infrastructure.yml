@@ -31,16 +31,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Verify checkout contents
+      - name: Capture source commit
+        id: source
         run: |
-          echo "===== GITHUB WORKSPACE ====="
-          echo "$GITHUB_WORKSPACE"
-
-          echo "===== CHECKED OUT COMMIT ====="
-          git rev-parse HEAD
-
-          echo "===== TERRAFORM DIRECTORY ====="
-          ls -la "$GITHUB_WORKSPACE/terraform"
+          SOURCE_COMMIT=$(git rev-parse HEAD)
+          echo "source_commit=$SOURCE_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "Planning from commit: $SOURCE_COMMIT"
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v6
@@ -96,6 +92,7 @@ jobs:
           IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           cd "$GITHUB_WORKSPACE/terraform"
+
           terraform plan \
             -input=false \
             -var="image_tag=$IMAGE_TAG" \
@@ -106,12 +103,28 @@ jobs:
           cd "$GITHUB_WORKSPACE/terraform"
           terraform show -no-color tfplan > tfplan.txt
 
+      - name: Create plan metadata
+        env:
+          SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          cd "$GITHUB_WORKSPACE/terraform"
+
+          {
+            echo "source_commit=$SOURCE_COMMIT"
+            echo "image_tag=$IMAGE_TAG"
+            echo "plan_run_id=$GITHUB_RUN_ID"
+          } > plan-metadata.txt
+
+          cat plan-metadata.txt
+
       - name: Upload Terraform plan
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-plan-${{ github.run_number }}
+          name: terraform-plan-${{ github.run_id }}
           path: |
             terraform/tfplan
             terraform/tfplan.txt
+            terraform/plan-metadata.txt
           retention-days: 5
 

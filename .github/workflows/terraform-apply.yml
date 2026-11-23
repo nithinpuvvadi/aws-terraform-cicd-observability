@@ -1,0 +1,193 @@
+
+name: Terraform Apply Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      plan_run_id:
+        description: "GitHub Actions run ID that generated the reviewed Terraform plan"
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+
+concurrency:
+  group: terraform-infrastructure
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  TF_IN_AUTOMATION: true
+  TF_INPUT: false
+
+jobs:
+  terraform-apply:
+    name: Apply Reviewed Terraform Plan
+    runs-on: ubuntu-latest
+    environment: terraform-apply
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Validate plan run ID
+        env:
+          PLAN_RUN_ID: ${{ inputs.plan_run_id }}
+        run: |
+          if [[ ! "$PLAN_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: Invalid GitHub Actions run ID"
+            exit 1
+          fi
+
+      - name: Verify source Plan workflow run
+        id: planrun
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLAN_RUN_ID: ${{ inputs.plan_run_id }}
+        run: |
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$PLAN_RUN_ID" \
+            > "$RUNNER_TEMP/plan-run.json"
+
+          PLAN_PATH=$(jq -r '.path' "$RUNNER_TEMP/plan-run.json")
+          PLAN_STATUS=$(jq -r '.status' "$RUNNER_TEMP/plan-run.json")
+          PLAN_CONCLUSION=$(jq -r '.conclusion' "$RUNNER_TEMP/plan-run.json")
+          PLAN_REPOSITORY=$(jq -r '.head_repository.full_name' "$RUNNER_TEMP/plan-run.json")
+          PLAN_BRANCH=$(jq -r '.head_branch' "$RUNNER_TEMP/plan-run.json")
+          PLAN_COMMIT=$(jq -r '.head_sha' "$RUNNER_TEMP/plan-run.json")
+
+          if [[ "$PLAN_PATH" != ".github/workflows/terraform-infrastructure.yml" ]]; then
+            echo "ERROR: Run did not originate from the Terraform Plan workflow"
+            exit 1
+          fi
+
+          if [[ "$PLAN_STATUS" != "completed" || "$PLAN_CONCLUSION" != "success" ]]; then
+            echo "ERROR: Terraform Plan workflow did not complete successfully"
+            exit 1
+          fi
+
+          if [[ "$PLAN_REPOSITORY" != "$GITHUB_REPOSITORY" ]]; then
+            echo "ERROR: Plan belongs to a different repository"
+            exit 1
+          fi
+
+          if [[ "$PLAN_BRANCH" != "main" ]]; then
+            echo "ERROR: Plan was not generated from main"
+            exit 1
+          fi
+
+          if [[ ! "$PLAN_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: Invalid source commit in GitHub run metadata"
+            exit 1
+          fi
+
+          echo "head_sha=$PLAN_COMMIT" >> "$GITHUB_OUTPUT"
+
+          echo "Verified successful Plan run: $PLAN_RUN_ID"
+          echo "Plan source commit: $PLAN_COMMIT"
+
+      - name: Download Terraform plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan-${{ inputs.plan_run_id }}
+          path: ${{ runner.temp }}/terraform-plan
+          run-id: ${{ inputs.plan_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate plan metadata
+        id: metadata
+        env:
+          EXPECTED_RUN_ID: ${{ inputs.plan_run_id }}
+          EXPECTED_COMMIT: ${{ steps.planrun.outputs.head_sha }}
+        run: |
+          METADATA_FILE="$RUNNER_TEMP/terraform-plan/plan-metadata.txt"
+
+          if [[ ! -f "$METADATA_FILE" ]]; then
+            echo "ERROR: Plan metadata file is missing"
+            exit 1
+          fi
+
+          SOURCE_COMMIT=$(sed -n 's/^source_commit=//p' "$METADATA_FILE")
+          IMAGE_TAG=$(sed -n 's/^image_tag=//p' "$METADATA_FILE")
+          RECORDED_RUN_ID=$(sed -n 's/^plan_run_id=//p' "$METADATA_FILE")
+
+          if [[ ! "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: Invalid source commit in metadata"
+            exit 1
+          fi
+
+          if [[ "$SOURCE_COMMIT" != "$EXPECTED_COMMIT" ]]; then
+            echo "ERROR: Metadata commit does not match GitHub Plan run"
+            exit 1
+          fi
+
+          if [[ ! "$IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR: Invalid image SHA in metadata"
+            exit 1
+          fi
+
+          if [[ "$RECORDED_RUN_ID" != "$EXPECTED_RUN_ID" ]]; then
+            echo "ERROR: Plan run ID does not match metadata"
+            exit 1
+          fi
+
+          if [[ ! -f "$RUNNER_TEMP/terraform-plan/tfplan" ]]; then
+            echo "ERROR: Saved Terraform plan is missing"
+            exit 1
+          fi
+
+          if [[ ! -f "$RUNNER_TEMP/terraform-plan/tfplan.txt" ]]; then
+            echo "ERROR: Readable Terraform plan is missing"
+            exit 1
+          fi
+
+          echo "source_commit=$SOURCE_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+          echo "Source commit: $SOURCE_COMMIT"
+          echo "Application image: $IMAGE_TAG"
+          echo "Plan run ID: $RECORDED_RUN_ID"
+
+      - name: Checkout exact source commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.metadata.outputs.source_commit }}
+          path: source
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.TERRAFORM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.5
+
+      - name: Verify application image still exists
+        env:
+          IMAGE_TAG: ${{ steps.metadata.outputs.image_tag }}
+        run: |
+          aws ecr describe-images \
+            --region "$AWS_REGION" \
+            --repository-name aws-terraform-cicd-observability \
+            --image-ids imageTag="$IMAGE_TAG"
+
+      - name: Initialize Terraform backend
+        run: |
+          cd "$GITHUB_WORKSPACE/source/terraform"
+          terraform init -input=false
+
+      - name: Apply saved Terraform plan
+        run: |
+          cd "$GITHUB_WORKSPACE/source/terraform"
+
+          terraform apply \
+            -input=false \
+            "$RUNNER_TEMP/terraform-plan/tfplan"
+
