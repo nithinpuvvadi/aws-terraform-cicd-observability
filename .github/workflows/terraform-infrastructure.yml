@@ -25,29 +25,28 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
       - name: Verify checkout contents
         run: |
-            echo "===== GITHUB WORKSPACE ====="
-            echo "$GITHUB_WORKSPACE"
+          echo "===== GITHUB WORKSPACE ====="
+          echo "$GITHUB_WORKSPACE"
 
-            echo "===== CURRENT DIRECTORY ====="
-            pwd
+          echo "===== CURRENT DIRECTORY ====="
+          pwd
 
-            echo "===== CHECKED OUT COMMIT ====="
-            git rev-parse HEAD
+          echo "===== CHECKED OUT COMMIT ====="
+          git rev-parse HEAD
 
-            echo "===== ROOT DIRECTORY CONTENTS ====="
-            ls -la
+          echo "===== ROOT DIRECTORY CONTENTS ====="
+          ls -la
 
-            echo "===== TERRAFORM DIRECTORY ====="
-            if [ -d terraform ]; then
-              ls -la terraform
-            else
-              echo "ERROR: terraform directory is missing from checkout"
-            fi
-
-            echo "===== GIT TRACKED TERRAFORM FILES ====="
-            git ls-tree -r --name-only HEAD terraform/
+          echo "===== TERRAFORM DIRECTORY ====="
+          if [ -d "$GITHUB_WORKSPACE/terraform" ]; then
+            ls -la "$GITHUB_WORKSPACE/terraform"
+          else
+            echo "ERROR: Terraform directory is missing"
+            exit 1
+          fi
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v6
@@ -64,28 +63,32 @@ jobs:
           terraform_version: 1.16.5
 
       - name: Terraform format check
-        working-directory: terraform
-        run: terraform fmt -check -recursive
+        run: |
+          cd "$GITHUB_WORKSPACE/terraform"
+          terraform fmt -check -recursive
 
       - name: Terraform initialize
-        working-directory: terraform
-        run: terraform init -input=false
+        run: |
+          cd "$GITHUB_WORKSPACE/terraform"
+          terraform init -input=false
 
       - name: Terraform validate
-        working-directory: terraform
-        run: terraform validate
+        run: |
+          cd "$GITHUB_WORKSPACE/terraform"
+          terraform validate
 
       - name: Terraform plan
-        working-directory: terraform
         run: |
+          cd "$GITHUB_WORKSPACE/terraform"
           terraform plan \
             -input=false \
             -var="image_tag=bootstrap-placeholder" \
             -out=tfplan
 
       - name: Export readable plan
-        working-directory: terraform
-        run: terraform show -no-color tfplan > tfplan.txt
+        run: |
+          cd "$GITHUB_WORKSPACE/terraform"
+          terraform show -no-color tfplan > tfplan.txt
 
       - name: Upload Terraform plan
         uses: actions/upload-artifact@v4
